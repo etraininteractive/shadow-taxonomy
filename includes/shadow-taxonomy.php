@@ -14,6 +14,7 @@ function create_relationship( $post_type, $taxonomy ) {
 	add_action( 'before_delete_post', delete_shadow_term( $taxonomy ) );
 }
 
+
 /**
  * Function creates a closure for the wp_insert_post hook, which handles creating an
  * associated taxonomy term.
@@ -23,10 +24,14 @@ function create_relationship( $post_type, $taxonomy ) {
  * @return Closure
  */
 function create_shadow_term( $post_type, $taxonomy ) {
+
 	return function( $post_id ) use ( $post_type, $taxonomy ) {
-		$term = get_associated_term( $post_id, $taxonomy );
 
 		$post = get_post( $post_id );
+
+		if (!$post){
+			return false;
+		}
 
 		if ( $post->post_type !== $post_type ) {
 			return false;
@@ -36,10 +41,12 @@ function create_shadow_term( $post_type, $taxonomy ) {
 			return false;
 		}
 
+		$term = get_associated_term( $post_id, $taxonomy );
+
 		if ( ! $term ) {
 			create_shadow_taxonomy_term( $post_id, $post, $taxonomy );
 		} else {
-			$post = get_associated_post( $term, $post_type );
+			$post = get_associated_post( $term );
 
 			if ( empty( $post ) ) {
 				return false;
@@ -71,7 +78,9 @@ function create_shadow_term( $post_type, $taxonomy ) {
  * @return Closure
  */
 function delete_shadow_term( $taxonomy ) {
+
 	return function( $postid ) use ( $taxonomy ) {
+
 		$term = get_associated_term( $postid, $taxonomy );
 
 		if ( ! $term ) {
@@ -90,19 +99,25 @@ function delete_shadow_term( $taxonomy ) {
  * @param object $post The WP Post Object.
  * @param string $taxonomy Taxonomy Term Name.
  *
- * @return bool|int false Term ID if created or false if an error occurred.
+ * @return \WP_Term|false Term if created or false if an error occurred.
  */
 function create_shadow_taxonomy_term( $post_id, $post, $taxonomy ) {
+
+	if (!$post || !$post_id)
+		return false;
+
 	$new_term = wp_insert_term( $post->post_title, $taxonomy, [ 'slug' => $post->post_name ] );
 
 	if ( is_wp_error( $new_term ) ) {
 		return false;
 	}
 
-	update_term_meta( $new_term['term_id'], 'shadow_post_id', $post_id );
-	update_post_meta( $post_id, 'shadow_term_id', $new_term['term_id'] );
+	$term_id = (int) $new_term['term_id'];
 
-	return $new_term;
+	update_term_meta( $term_id, 'shadow_post_id', $post_id );
+	update_post_meta( $post_id, 'shadow_term_id', $term_id );
+
+	return get_term($term_id);
 }
 
 /**
@@ -154,6 +169,7 @@ function get_related_post_by_slug( $term, $post_type ) {
 	return $post->posts[0];
 }
 
+
 /**
  * Function gets the associated shadow post of a given term object.
  *
@@ -169,11 +185,10 @@ function get_associated_post_id( $term ) {
  * Find the shadow or associted post to the input taxonomy term.
  *
  * @param object $term WP Term Objct.
- * @param string $post_type Post Type Name.
  *
  * @return bool|object Returns the associated post object or false if no post is found.
  */
-function get_associated_post( $term, $post_type ) {
+function get_associated_post( $term ) {
 
 	if ( empty( $term ) ) {
 		return false;
@@ -209,16 +224,14 @@ function get_associated_term_id( $post ) {
  */
 function get_associated_term( $post, $taxonomy ) {
 
-	if ( is_int( $post ) ) {
-		$post = get_post( $post );
-	}
+	$post = get_post( $post );
 
 	if ( empty( $post ) ) {
 		return false;
 	}
 
 	$term_id = get_associated_term_id( $post );
-	return get_term_by( 'id', $term_id, $taxonomy );
+	return get_term_by( 'term_id', $term_id, $taxonomy );
 }
 
 /**
@@ -228,20 +241,75 @@ function get_associated_term( $post, $taxonomy ) {
  *
  * @param int    $post_id The ID of the post.
  * @param string $taxonomy The name of the shadow taxonomy.
- * @param string $cpt The name of the associated post type.
  *
  * @return array|bool Returns false or an are of post Objects if any are found.
  */
-function get_the_posts( $post_id, $taxonomy, $cpt ) {
+function get_the_posts( $post_id, $taxonomy, $return = 'object' ) {
+
 	$terms = get_the_terms( $post_id, $taxonomy );
 
 	if ( ! empty( $terms ) ) {
-		return array_map( function( $term ) use ( $cpt ) {
-			$post = get_associated_post( $term, $cpt );
+
+		return array_map( function( $term) use ($return ) {
+
+			$post = get_associated_post( $term );
+
 			if ( ! empty( $post ) ) {
-				return $post;
+				if ($return == 'ID'){
+					return $post->ID;
+				} else {
+					return $post;
+				}
 			}
 		}, $terms );
 	}
 	return false;
+}
+
+/**
+ * Function will get all related posts for a given post ID. The function
+ * essentially converts all the attached shadow term relations into the actual associated
+ * posts.
+ *
+ * @param int    $post_id The ID of the post.
+ * @param string $taxonomy The name of the shadow taxonomy.
+ * @param string $post_type The post_type to filter results by.
+  *@param array $args Array of the argument overrides for the WP Query.
+ *
+ * @return array|bool Returns false or an are of post Objects if any are found.
+ */
+function get_the_shadows_posts( $post_id, $taxonomy, $post_type, $args = [] ) {
+
+	$term = get_associated_term( $post_id, $taxonomy );
+
+	if ( ! empty( $term ) ) {
+
+		$defaults = [
+			'post_type'      => $post_type,
+			'posts_per_page' => -1,
+			'post_status'    => 'publish',
+			'tax_query'     => [
+					[
+					 'taxonomy' => $term->taxonomy,
+					 'terms'    => $term->term_id,
+					],
+				]
+		];
+
+		$args = wp_parse_args($args, $defaults);
+
+		$query = new \WP_Query($args);
+
+		$posts = $query->get_posts();
+
+		if ( !$posts ) {
+			return [];
+		}
+
+		return $posts;
+
+	}
+
+	return false;
+
 }

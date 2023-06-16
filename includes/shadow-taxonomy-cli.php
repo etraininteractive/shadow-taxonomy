@@ -79,8 +79,8 @@ class Shadow_Terms extends \WP_CLI_Command {
 		$terms = get_terms( $tax, [ 'hide_empty' => false ] );
 
 		if ( ! empty( $terms ) ) {
-			$terms_to_delete = array_filter( $terms, function( $term ) use ( $cpt ) {
-				$associated_post = Core\get_associated_post( $term, $cpt );
+			$terms_to_delete = array_filter( $terms, function( $term ) {
+				$associated_post = Core\get_associated_post( $term );
 
 				if ( empty( $associated_post ) ) {
 					return $term;
